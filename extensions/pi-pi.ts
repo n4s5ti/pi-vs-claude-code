@@ -18,10 +18,10 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { spawn } from "child_process";
 import { readdirSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { join, resolve } from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import { spawnPiAgent } from "./shared/spawn-agent.ts";
 
 // ── Types ────────────────────────────────────────
 
@@ -40,7 +40,6 @@ interface ExpertState {
 	elapsed: number;
 	lastLine: string;
 	queryCount: number;
-	timer?: ReturnType<typeof setInterval>;
 }
 
 // ── Helpers ──────────────────────────────────────
@@ -266,12 +265,6 @@ export default function (pi: ExtensionAPI) {
 		state.queryCount++;
 		updateWidget();
 
-		const startTime = Date.now();
-		state.timer = setInterval(() => {
-			state.elapsed = Date.now() - startTime;
-			updateWidget();
-		}, 1000);
-
 		const model = ctx.model
 			? `${ctx.model.provider}/${ctx.model.id}`
 			: "openrouter/google/gemini-3-flash-preview";
@@ -288,84 +281,30 @@ export default function (pi: ExtensionAPI) {
 			question,
 		];
 
-		const textChunks: string[] = [];
-
-		return new Promise((resolve) => {
-			const proc = spawn("pi", args, {
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env },
-			});
-
-			let buffer = "";
-
-			proc.stdout!.setEncoding("utf-8");
-			proc.stdout!.on("data", (chunk: string) => {
-				buffer += chunk;
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					try {
-						const event = JSON.parse(line);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") {
-								textChunks.push(delta.delta || "");
-								const full = textChunks.join("");
-								const last = full.split("\n").filter((l: string) => l.trim()).pop() || "";
-								state.lastLine = last;
-								updateWidget();
-							}
-						}
-					} catch {}
-				}
-			});
-
-			proc.stderr!.setEncoding("utf-8");
-			proc.stderr!.on("data", () => {});
-
-			proc.on("close", (code) => {
-				if (buffer.trim()) {
-					try {
-						const event = JSON.parse(buffer);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") textChunks.push(delta.delta || "");
-						}
-					} catch {}
-				}
-
-				clearInterval(state.timer);
-				state.elapsed = Date.now() - startTime;
-				state.status = code === 0 ? "done" : "error";
-
-				const full = textChunks.join("");
-				state.lastLine = full.split("\n").filter((l: string) => l.trim()).pop() || "";
+		const { promise } = spawnPiAgent(args, {
+			onTextDelta: (_delta, fullText) => {
+				const last = fullText.split("\n").filter((l: string) => l.trim()).pop() || "";
+				state.lastLine = last;
 				updateWidget();
-
-				ctx.ui.notify(
-					`${displayName(state.def.name)} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
-					state.status === "done" ? "success" : "error"
-				);
-
-				resolve({
-					output: full,
-					exitCode: code ?? 1,
-					elapsed: state.elapsed,
-				});
-			});
-
-			proc.on("error", (err) => {
-				clearInterval(state.timer);
-				state.status = "error";
-				state.lastLine = `Error: ${err.message}`;
+			},
+			onTick: (elapsed) => {
+				state.elapsed = elapsed;
 				updateWidget();
-				resolve({
-					output: `Error spawning expert: ${err.message}`,
-					exitCode: 1,
-					elapsed: Date.now() - startTime,
-				});
-			});
+			},
+		});
+
+		return promise.then((result) => {
+			state.elapsed = result.elapsed;
+			state.status = result.exitCode === 0 ? "done" : "error";
+			state.lastLine = result.output.split("\n").filter((l: string) => l.trim()).pop() || state.lastLine;
+			updateWidget();
+
+			ctx.ui.notify(
+				`${displayName(state.def.name)} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
+				state.status === "done" ? "success" : "error"
+			);
+
+			return result;
 		});
 	}
 

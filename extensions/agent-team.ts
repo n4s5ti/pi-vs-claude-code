@@ -24,16 +24,11 @@ import { spawn } from "child_process";
 import { readdirSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import { parseAgentFile, type BaseAgentDef } from "./shared/frontmatter.ts";
 
 // ── Types ────────────────────────────────────────
 
-interface AgentDef {
-	name: string;
-	description: string;
-	tools: string;
-	systemPrompt: string;
-	file: string;
-}
+type AgentDef = BaseAgentDef;
 
 interface AgentState {
 	def: AgentDef;
@@ -72,36 +67,6 @@ function parseTeamsYaml(raw: string): Record<string, string[]> {
 		}
 	}
 	return teams;
-}
-
-// ── Frontmatter Parser ───────────────────────────
-
-function parseAgentFile(filePath: string): AgentDef | null {
-	try {
-		const raw = readFileSync(filePath, "utf-8");
-		const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-		if (!match) return null;
-
-		const frontmatter: Record<string, string> = {};
-		for (const line of match[1].split("\n")) {
-			const idx = line.indexOf(":");
-			if (idx > 0) {
-				frontmatter[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-			}
-		}
-
-		if (!frontmatter.name) return null;
-
-		return {
-			name: frontmatter.name,
-			description: frontmatter.description || "",
-			tools: frontmatter.tools || "read,grep,find,ls",
-			systemPrompt: match[2].trim(),
-			file: filePath,
-		};
-	} catch {
-		return null;
-	}
 }
 
 function scanAgentDirs(cwd: string): AgentDef[] {

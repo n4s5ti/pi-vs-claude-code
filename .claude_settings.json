@@ -1,0 +1,39 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read(./**)",
+      "Write(./**)",
+      "Edit(./**)",
+      "Glob(./**)",
+      "Grep(./**)",
+      "Read(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/**)",
+      "Write(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/**)",
+      "Edit(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/**)",
+      "Glob(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/**)",
+      "Grep(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/**)",
+      "Read(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/.auto-claude/specs/005-extract-shared-frontmatter-parser-module/**)",
+      "Write(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/.auto-claude/specs/005-extract-shared-frontmatter-parser-module/**)",
+      "Edit(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/worktrees/tasks/005-extract-shared-frontmatter-parser-module/.auto-claude/specs/005-extract-shared-frontmatter-parser-module/**)",
+      "Read(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/**)",
+      "Write(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/**)",
+      "Edit(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/**)",
+      "Glob(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/**)",
+      "Grep(/home/n4s5ti/Documents/dev/pi-vs-claude-code/.auto-claude/**)",
+      "Bash(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "mcp__context7__resolve-library-id(*)",
+      "mcp__context7__query-docs(*)",
+      "mcp__graphiti-memory__search_nodes(*)",
+      "mcp__graphiti-memory__search_facts(*)",
+      "mcp__graphiti-memory__add_episode(*)",
+      "mcp__graphiti-memory__get_episodes(*)",
+      "mcp__graphiti-memory__get_entity_edge(*)"
+    ]
+  }
+}

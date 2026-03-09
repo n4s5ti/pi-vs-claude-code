@@ -24,10 +24,10 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { spawn } from "child_process";
 import { readFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import { spawnPiAgent } from "./shared/spawn-agent.ts";
 
 // ── Types ────────────────────────────────────────
 
@@ -328,7 +328,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Run Agent (subprocess) ──────────────────
 
-	function runAgent(
+	async function runAgent(
 		agentDef: AgentDef,
 		task: string,
 		stepIndex: number,
@@ -359,82 +359,30 @@ export default function (pi: ExtensionAPI) {
 
 		args.push(task);
 
-		const textChunks: string[] = [];
-		const startTime = Date.now();
 		const state = stepStates[stepIndex];
 
-		return new Promise((resolve) => {
-			const proc = spawn("pi", args, {
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env },
-			});
-
-			const timer = setInterval(() => {
-				state.elapsed = Date.now() - startTime;
+		const { promise } = spawnPiAgent(args, {
+			onTextDelta: (_delta, fullText) => {
+				const last = fullText.split("\n").filter((l: string) => l.trim()).pop() || "";
+				state.lastWork = last;
 				updateWidget();
-			}, 1000);
-
-			let buffer = "";
-
-			proc.stdout!.setEncoding("utf-8");
-			proc.stdout!.on("data", (chunk: string) => {
-				buffer += chunk;
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					try {
-						const event = JSON.parse(line);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") {
-								textChunks.push(delta.delta || "");
-								const full = textChunks.join("");
-								const last = full.split("\n").filter((l: string) => l.trim()).pop() || "";
-								state.lastWork = last;
-								updateWidget();
-							}
-						}
-					} catch {}
-				}
-			});
-
-			proc.stderr!.setEncoding("utf-8");
-			proc.stderr!.on("data", () => {});
-
-			proc.on("close", (code) => {
-				if (buffer.trim()) {
-					try {
-						const event = JSON.parse(buffer);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") textChunks.push(delta.delta || "");
-						}
-					} catch {}
-				}
-
-				clearInterval(timer);
-				const elapsed = Date.now() - startTime;
+			},
+			onTick: (elapsed) => {
 				state.elapsed = elapsed;
-				const output = textChunks.join("");
-				state.lastWork = output.split("\n").filter((l: string) => l.trim()).pop() || "";
-
-				if (code === 0) {
-					agentSessions.set(agentKey, agentSessionFile);
-				}
-
-				resolve({ output, exitCode: code ?? 1, elapsed });
-			});
-
-			proc.on("error", (err) => {
-				clearInterval(timer);
-				resolve({
-					output: `Error spawning agent: ${err.message}`,
-					exitCode: 1,
-					elapsed: Date.now() - startTime,
-				});
-			});
+				updateWidget();
+			},
 		});
+
+		const result = await promise;
+
+		state.elapsed = result.elapsed;
+		state.lastWork = result.output.split("\n").filter((l: string) => l.trim()).pop() || "";
+
+		if (result.exitCode === 0) {
+			agentSessions.set(agentKey, agentSessionFile);
+		}
+
+		return result;
 	}
 
 	// ── Run Chain (sequential pipeline) ─────────

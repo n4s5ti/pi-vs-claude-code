@@ -14,3 +14,6 @@ __pycache__/
 .playwright-cli/
 
 tmp/
+
+# Auto Claude data directory
+.auto-claude/

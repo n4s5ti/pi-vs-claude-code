@@ -17,6 +17,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import { parseFrontmatter } from "./shared/frontmatter.ts";
 
 interface AgentDef {
 	name: string;
@@ -24,17 +25,6 @@ interface AgentDef {
 	tools: string[];
 	body: string;
 	source: string;
-}
-
-function parseFrontmatter(raw: string): { fields: Record<string, string>; body: string } {
-	const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
-	if (!match) return { fields: {}, body: raw };
-	const fields: Record<string, string> = {};
-	for (const line of match[1].split("\n")) {
-		const idx = line.indexOf(":");
-		if (idx > 0) fields[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-	}
-	return { fields, body: match[2] };
 }
 
 function scanAgents(dir: string, source: string): AgentDef[] {

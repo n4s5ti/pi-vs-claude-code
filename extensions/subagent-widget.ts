@@ -16,11 +16,11 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-const { spawn } = require("child_process") as any;
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
+import { spawnPiAgent } from "./shared/spawn-agent.ts";
 
 interface SubState {
 	id: number;
@@ -31,7 +31,7 @@ interface SubState {
 	elapsed: number;
 	sessionFile: string;   // persistent JSONL session path — used by /subcont to resume
 	turnCount: number;     // increments each time /subcont continues this agent
-	proc?: any;            // active ChildProcess ref (for kill on /subrm)
+	killFn?: () => void;   // kills the active process (for /subrm)
 }
 
 export default function (pi: ExtensionAPI) {
@@ -108,38 +108,19 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// ── Streaming helpers ─────────────────────────────────────────────────────
-
-	function processLine(state: SubState, line: string) {
-		if (!line.trim()) return;
-		try {
-			const event = JSON.parse(line);
-			const type = event.type;
-
-			if (type === "message_update") {
-				const delta = event.assistantMessageEvent;
-				if (delta?.type === "text_delta") {
-					state.textChunks.push(delta.delta || "");
-					updateWidgets();
-				}
-			} else if (type === "tool_execution_start") {
-				state.toolCount++;
-				updateWidgets();
-			}
-		} catch {}
-	}
+	// ── Agent spawning ────────────────────────────────────────────────────────
 
 	function spawnAgent(
 		state: SubState,
 		prompt: string,
 		ctx: any,
-	): Promise<void> {
+	): void {
 		const model = ctx.model
 			? `${ctx.model.provider}/${ctx.model.id}`
 			: "openrouter/google/gemini-3-flash-preview";
 
-		return new Promise<void>((resolve) => {
-			const proc = spawn("pi", [
+		const handle = spawnPiAgent(
+			[
 				"--mode", "json",
 				"-p",
 				"--session", state.sessionFile,   // persistent session for /subcont resumption
@@ -148,68 +129,48 @@ export default function (pi: ExtensionAPI) {
 				"--tools", "read,bash,grep,find,ls",
 				"--thinking", "off",
 				prompt,
-			], {
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env },
-			});
-
-			state.proc = proc;
-
-			const startTime = Date.now();
-			const timer = setInterval(() => {
-				state.elapsed = Date.now() - startTime;
-				updateWidgets();
-			}, 1000);
-
-			let buffer = "";
-
-			proc.stdout!.setEncoding("utf-8");
-			proc.stdout!.on("data", (chunk: string) => {
-				buffer += chunk;
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) processLine(state, line);
-			});
-
-			proc.stderr!.setEncoding("utf-8");
-			proc.stderr!.on("data", (chunk: string) => {
-				if (chunk.trim()) {
-					state.textChunks.push(chunk);
+			],
+			{
+				onTextDelta: (delta) => {
+					state.textChunks.push(delta);
 					updateWidgets();
-				}
-			});
+				},
+				onToolExecutionStart: () => {
+					state.toolCount++;
+					updateWidgets();
+				},
+				onTick: (elapsed) => {
+					state.elapsed = elapsed;
+					updateWidgets();
+				},
+				onStderr: (chunk) => {
+					if (chunk.trim()) {
+						state.textChunks.push(chunk);
+						updateWidgets();
+					}
+				},
+			},
+		);
 
-			proc.on("close", (code) => {
-				if (buffer.trim()) processLine(state, buffer);
-				clearInterval(timer);
-				state.elapsed = Date.now() - startTime;
-				state.status = code === 0 ? "done" : "error";
-				state.proc = undefined;
-				updateWidgets();
+		state.killFn = handle.kill;
 
-				const result = state.textChunks.join("");
-				ctx.ui.notify(
-					`Subagent #${state.id} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
-					state.status === "done" ? "success" : "error"
-				);
+		handle.promise.then(({ exitCode, elapsed }) => {
+			state.elapsed = elapsed;
+			state.status = exitCode === 0 ? "done" : "error";
+			state.killFn = undefined;
+			updateWidgets();
 
-				pi.sendMessage({
-					customType: "subagent-result",
-					content: `Subagent #${state.id}${state.turnCount > 1 ? ` (Turn ${state.turnCount})` : ""} finished "${prompt}" in ${Math.round(state.elapsed / 1000)}s.\n\nResult:\n${result.slice(0, 8000)}${result.length > 8000 ? "\n\n... [truncated]" : ""}`,
-					display: true,
-				}, { deliverAs: "followUp", triggerTurn: true });
+			const result = state.textChunks.join("");
+			ctx.ui.notify(
+				`Subagent #${state.id} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
+				state.status === "done" ? "success" : "error"
+			);
 
-				resolve();
-			});
-
-			proc.on("error", (err) => {
-				clearInterval(timer);
-				state.status = "error";
-				state.proc = undefined;
-				state.textChunks.push(`Error: ${err.message}`);
-				updateWidgets();
-				resolve();
-			});
+			pi.sendMessage({
+				customType: "subagent-result",
+				content: `Subagent #${state.id}${state.turnCount > 1 ? ` (Turn ${state.turnCount})` : ""} finished "${prompt}" in ${Math.round(state.elapsed / 1000)}s.\n\nResult:\n${result.slice(0, 8000)}${result.length > 8000 ? "\n\n... [truncated]" : ""}`,
+				display: true,
+			}, { deliverAs: "followUp", triggerTurn: true });
 		});
 	}
 
@@ -292,8 +253,8 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: `Error: No subagent #${args.id} found.` }] };
 			}
 
-			if (state.proc && state.status === "running") {
-				state.proc.kill("SIGTERM");
+			if (state.killFn && state.status === "running") {
+				state.killFn();
 			}
 			ctx.ui.setWidget(`sub-${args.id}`, undefined);
 			agents.delete(args.id);
@@ -425,8 +386,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Kill the process if still running
-			if (state.proc && state.status === "running") {
-				state.proc.kill("SIGTERM");
+			if (state.killFn && state.status === "running") {
+				state.killFn();
 				ctx.ui.notify(`Subagent #${num} killed and removed.`, "warning");
 			} else {
 				ctx.ui.notify(`Subagent #${num} removed.`, "info");
@@ -446,8 +407,8 @@ export default function (pi: ExtensionAPI) {
 
 			let killed = 0;
 			for (const [id, state] of Array.from(agents.entries())) {
-				if (state.proc && state.status === "running") {
-					state.proc.kill("SIGTERM");
+				if (state.killFn && state.status === "running") {
+					state.killFn();
 					killed++;
 				}
 				ctx.ui.setWidget(`sub-${id}`, undefined);
@@ -469,8 +430,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 		for (const [id, state] of Array.from(agents.entries())) {
-			if (state.proc && state.status === "running") {
-				state.proc.kill("SIGTERM");
+			if (state.killFn && state.status === "running") {
+				state.killFn();
 			}
 			ctx.ui.setWidget(`sub-${id}`, undefined);
 		}

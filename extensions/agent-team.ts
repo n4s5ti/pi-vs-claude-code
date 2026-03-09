@@ -20,7 +20,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text, type AutocompleteItem, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { spawn } from "child_process";
+import { spawnPiAgent } from "./shared/spawn-agent.ts";
 import { readdirSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
 import { applyExtensionDefaults } from "./themeMap.ts";
@@ -45,7 +45,6 @@ interface AgentState {
 	contextPct: number;
 	sessionFile: string | null;
 	runCount: number;
-	timer?: ReturnType<typeof setInterval>;
 }
 
 // ── Display Name Helper ──────────────────────────
@@ -329,12 +328,6 @@ export default function (pi: ExtensionAPI) {
 		state.runCount++;
 		updateWidget();
 
-		const startTime = Date.now();
-		state.timer = setInterval(() => {
-			state.elapsed = Date.now() - startTime;
-			updateWidget();
-		}, 1000);
-
 		const model = ctx.model
 			? `${ctx.model.provider}/${ctx.model.id}`
 			: "openrouter/google/gemini-3-flash-preview";
@@ -362,105 +355,57 @@ export default function (pi: ExtensionAPI) {
 
 		args.push(task);
 
-		const textChunks: string[] = [];
-
-		return new Promise((resolve) => {
-			const proc = spawn("pi", args, {
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env },
-			});
-
-			let buffer = "";
-
-			proc.stdout!.setEncoding("utf-8");
-			proc.stdout!.on("data", (chunk: string) => {
-				buffer += chunk;
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					try {
-						const event = JSON.parse(line);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") {
-								textChunks.push(delta.delta || "");
-								const full = textChunks.join("");
-								const last = full.split("\n").filter((l: string) => l.trim()).pop() || "";
-								state.lastWork = last;
-								updateWidget();
-							}
-						} else if (event.type === "tool_execution_start") {
-							state.toolCount++;
-							updateWidget();
-						} else if (event.type === "message_end") {
-							const msg = event.message;
-							if (msg?.usage && contextWindow > 0) {
-								state.contextPct = ((msg.usage.input || 0) / contextWindow) * 100;
-								updateWidget();
-							}
-						} else if (event.type === "agent_end") {
-							const msgs = event.messages || [];
-							const last = [...msgs].reverse().find((m: any) => m.role === "assistant");
-							if (last?.usage && contextWindow > 0) {
-								state.contextPct = ((last.usage.input || 0) / contextWindow) * 100;
-								updateWidget();
-							}
-						}
-					} catch {}
-				}
-			});
-
-			proc.stderr!.setEncoding("utf-8");
-			proc.stderr!.on("data", () => {});
-
-			proc.on("close", (code) => {
-				if (buffer.trim()) {
-					try {
-						const event = JSON.parse(buffer);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") textChunks.push(delta.delta || "");
-						}
-					} catch {}
-				}
-
-				clearInterval(state.timer);
-				state.elapsed = Date.now() - startTime;
-				state.status = code === 0 ? "done" : "error";
-
-				// Mark session file as available for resume
-				if (code === 0) {
-					state.sessionFile = agentSessionFile;
-				}
-
-				const full = textChunks.join("");
-				state.lastWork = full.split("\n").filter((l: string) => l.trim()).pop() || "";
+		const { promise } = spawnPiAgent(args, {
+			onTextDelta: (_delta, fullText) => {
+				const last = fullText.split("\n").filter((l: string) => l.trim()).pop() || "";
+				state.lastWork = last;
 				updateWidget();
-
-				ctx.ui.notify(
-					`${displayName(state.def.name)} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
-					state.status === "done" ? "success" : "error"
-				);
-
-				resolve({
-					output: full,
-					exitCode: code ?? 1,
-					elapsed: state.elapsed,
-				});
-			});
-
-			proc.on("error", (err) => {
-				clearInterval(state.timer);
-				state.status = "error";
-				state.lastWork = `Error: ${err.message}`;
+			},
+			onToolExecutionStart: () => {
+				state.toolCount++;
 				updateWidget();
-				resolve({
-					output: `Error spawning agent: ${err.message}`,
-					exitCode: 1,
-					elapsed: Date.now() - startTime,
-				});
-			});
+			},
+			onMessageEnd: (event: unknown) => {
+				const evt = event as Record<string, unknown>;
+				const msg = evt.message as Record<string, unknown> | undefined;
+				if (msg?.usage && contextWindow > 0) {
+					state.contextPct = (((msg.usage as Record<string, number>).input || 0) / contextWindow) * 100;
+					updateWidget();
+				}
+			},
+			onAgentEnd: (event: unknown) => {
+				const evt = event as Record<string, unknown>;
+				const msgs = (evt.messages as any[]) || [];
+				const last = [...msgs].reverse().find((m: any) => m.role === "assistant");
+				if (last?.usage && contextWindow > 0) {
+					state.contextPct = ((last.usage.input || 0) / contextWindow) * 100;
+					updateWidget();
+				}
+			},
+			onTick: (elapsed) => {
+				state.elapsed = elapsed;
+				updateWidget();
+			},
+		});
+
+		return promise.then((result) => {
+			state.elapsed = result.elapsed;
+			state.status = result.exitCode === 0 ? "done" : "error";
+
+			// Mark session file as available for resume
+			if (result.exitCode === 0) {
+				state.sessionFile = agentSessionFile;
+			}
+
+			state.lastWork = result.output.split("\n").filter((l: string) => l.trim()).pop() || "";
+			updateWidget();
+
+			ctx.ui.notify(
+				`${displayName(state.def.name)} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
+				state.status === "done" ? "success" : "error"
+			);
+
+			return result;
 		});
 	}
 

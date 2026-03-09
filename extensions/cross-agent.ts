@@ -15,6 +15,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { applyExtensionDefaults } from "./themeMap.ts";
 import { wrapTextWithAnsi, visibleWidth } from "@mariozechner/pi-tui";
+import { parseFrontmatter } from "./shared/frontmatter.ts";
 
 // --- Synthwave palette ---
 function bg(s: string): string {
@@ -52,20 +53,6 @@ interface SourceGroup {
 	agents: Discovered[];
 }
 
-function parseFrontmatter(raw: string): { description: string; body: string; fields: Record<string, string> } {
-	const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
-	if (!match) return { description: "", body: raw, fields: {} };
-
-	const front = match[1];
-	const body = match[2];
-	const fields: Record<string, string> = {};
-	for (const line of front.split("\n")) {
-		const idx = line.indexOf(":");
-		if (idx > 0) fields[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-	}
-	return { description: fields.description || "", body, fields };
-}
-
 function expandArgs(template: string, args: string): string {
 	const parts = args.split(/\s+/).filter(Boolean);
 	let result = template;
@@ -83,10 +70,10 @@ function scanCommands(dir: string): Discovered[] {
 		for (const file of readdirSync(dir)) {
 			if (!file.endsWith(".md")) continue;
 			const raw = readFileSync(join(dir, file), "utf-8");
-			const { description, body } = parseFrontmatter(raw);
+			const { fields, body } = parseFrontmatter(raw);
 			items.push({
 				name: basename(file, ".md"),
-				description: description || body.split("\n").find((l) => l.trim())?.trim() || "",
+				description: fields.description || body.split("\n").find((l) => l.trim())?.trim() || "",
 				content: body,
 			});
 		}
@@ -103,18 +90,18 @@ function scanSkills(dir: string): Discovered[] {
 			const flatFile = join(dir, entry);
 			if (existsSync(skillFile) && statSync(skillFile).isFile()) {
 				const raw = readFileSync(skillFile, "utf-8");
-				const { description, body } = parseFrontmatter(raw);
+				const { fields, body } = parseFrontmatter(raw);
 				items.push({
 					name: entry,
-					description: description || body.split("\n").find((l) => l.trim())?.trim() || "",
+					description: fields.description || body.split("\n").find((l) => l.trim())?.trim() || "",
 					content: raw,
 				});
 			} else if (entry.endsWith(".md") && statSync(flatFile).isFile()) {
 				const raw = readFileSync(flatFile, "utf-8");
-				const { description, body } = parseFrontmatter(raw);
+				const { fields, body } = parseFrontmatter(raw);
 				items.push({
 					name: basename(entry, ".md"),
-					description: description || body.split("\n").find((l) => l.trim())?.trim() || "",
+					description: fields.description || body.split("\n").find((l) => l.trim())?.trim() || "",
 					content: raw,
 				});
 			}
